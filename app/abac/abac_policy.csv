@@ -1,0 +1,107 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ABAC-Policy: Scrap Data Platform
+# Format: p, sub_role, obj_type, act, field, effect
+#
+# Tier-Logik für das Stahlwerk (compound subject):
+#   - "stahlwerk"           → Standard-Tier (alle Tiers erhalten diese Basisrechte)
+#   - "stahlwerk_preferred" → Preferred-Tier (zusätzlich zu Standard)
+#   - "stahlwerk_strategic" → Strategic-Tier (zusätzlich zu Preferred)
+#
+# Die ABACEngine löst dies über Tier-Hierarchie auf:
+#   standard  → prüft: [stahlwerk]
+#   preferred → prüft: [stahlwerk, stahlwerk_preferred]
+#   strategic → prüft: [stahlwerk, stahlwerk_preferred, stahlwerk_strategic]
+#
+# Metallverarbeiter (Schrotterzeuger): sieht Basisinfos, eigene Provenienz, Preistransparenz
+# Händler/Recycler: schützt Lieferantenidentität als Hoheitswissen
+# Stahlwerk: will maximale Chemieinformationen, kein Zugang zu Handelskonditionen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Metallverarbeiter (scrap generator) ──────────────────────────────────────
+# Sieht: Chargenklasse, Masse, Herkunft, Preisbasis — kein Chemie-Detail
+p, metallverarbeiter, scrapbatch, read, batch_number, allow
+p, metallverarbeiter, scrapbatch, read, scrap_class, allow
+p, metallverarbeiter, scrapbatch, read, origin_type, allow
+p, metallverarbeiter, scrapbatch, read, origin_region, allow
+p, metallverarbeiter, scrapbatch, read, collection_period, allow
+p, metallverarbeiter, scrapbatch, read, mass_kg, allow
+p, metallverarbeiter, scrapbatch, read, volume_m3, allow
+p, metallverarbeiter, scrapbatch, read, preparation_degree, allow
+p, metallverarbeiter, scrapbatch, read, contamination_level, allow
+p, metallverarbeiter, scrapbatch, read, price_basis, allow
+p, metallverarbeiter, scrapbatch, read, pricing_formula_ref, allow
+p, metallverarbeiter, logistics, read, *, allow
+p, metallverarbeiter, logistics, write, *, allow
+
+# ── Händler/Recycler (scrap trader) ──────────────────────────────────────────
+# Sieht: alle eigenen Felder inkl. Lieferantenidentität und Handelskonditionen
+# Chemische Details: vollständiger Zugriff (eigene Analysedaten)
+# Niemals weitergegeben: supplier_id, price_basis, pricing_formula_ref
+p, haendler, scrapbatch, read, batch_number, allow
+p, haendler, scrapbatch, read, scrap_class, allow
+p, haendler, scrapbatch, read, origin_type, allow
+p, haendler, scrapbatch, read, origin_region, allow
+p, haendler, scrapbatch, read, collection_period, allow
+p, haendler, scrapbatch, read, mass_kg, allow
+p, haendler, scrapbatch, read, volume_m3, allow
+p, haendler, scrapbatch, read, preparation_degree, allow
+p, haendler, scrapbatch, read, contamination_level, allow
+p, haendler, scrapbatch, read, price_basis, allow
+p, haendler, scrapbatch, read, pricing_formula_ref, allow
+p, haendler, scrapbatch, read, supplier_id, allow
+p, haendler, scrapbatch, read, supplier_source, allow
+p, haendler, chemical, read, *, allow
+p, haendler, logistics, read, *, allow
+p, haendler, logistics, write, *, allow
+
+# ── Stahlwerk (EAF steel producer) — Basis (Standard-Tier) ───────────────────
+# Sieht: Chargennummer, Schrottklasse, Masse, Aufbereitungsgrad, Erfassungszeitraum
+# Keine Chemie, kein Volumen, keine Herkunftsdetails, keine EAF-Eignung
+p, stahlwerk, scrapbatch, read, batch_number, allow
+p, stahlwerk, scrapbatch, read, scrap_class, allow
+p, stahlwerk, scrapbatch, read, mass_kg, allow
+p, stahlwerk, scrapbatch, read, preparation_degree, allow
+p, stahlwerk, scrapbatch, read, collection_period, allow
+p, stahlwerk, logistics, read, delivery_status, allow
+p, stahlwerk, logistics, read, pickup_date, allow
+p, stahlwerk, logistics, read, delivery_date, allow
+p, stahlwerk, cbam, read, *, allow
+
+# ── Stahlwerk — Preferred-Tier (zusätzlich zu Standard) ──────────────────────
+# Sieht zusätzlich: Herkunftstyp, Herkunftsregion, Volumen
+p, stahlwerk_preferred, scrapbatch, read, origin_type, allow
+p, stahlwerk_preferred, scrapbatch, read, origin_region, allow
+p, stahlwerk_preferred, scrapbatch, read, volume_m3, allow
+
+# ── Stahlwerk — Strategic-Tier (zusätzlich zu Preferred) ─────────────────────
+# Sieht zusätzlich: Verunreinigungsgrad, EAF-Kompatibilität und Chemie vollständig
+p, stahlwerk_strategic, scrapbatch, read, contamination_level, allow
+p, stahlwerk_strategic, scrapbatch, read, eaf_compatibility, allow
+p, stahlwerk_strategic, chemical, read, *, allow
+
+# ── Container-Logistik Navigationsrechte ──────────────────────────────────────
+# Bestimmt welche Ansichten / Aktionen pro Rolle freigegeben sind.
+# Geprüft per engine.can_access_field(role, "container_logistics", <view>) im Frontend.
+#
+# Metallverarbeiter: darf nur eigene Container sehen, kein Marktüberblick
+# Händler: darf Marktüberblick und eigene Ansicht sehen
+p, metallverarbeiter, container_logistics, read, own_view, allow
+p, metallverarbeiter, container_logistics, read, initiate_request, allow
+p, haendler, container_logistics, read, own_view, allow
+p, haendler, container_logistics, read, market_view, allow
+p, haendler, container_logistics, read, submit_request, allow
+
+# ── Batch-Workflow Zugriffsrechte ─────────────────────────────────────────────
+# Steuert Zugriff auf /workflow/batches-Routen.
+# Metallverarbeiter: kein Zugriff (keine Regeln → alle Anfragen verweigert).
+# Händler: darf eigene Chargen anlegen, anbieten und Lieferung bestätigen.
+# Stahlwerk: darf eingehende Angebote sehen, annehmen/ablehnen, Lieferung bestätigen.
+p, haendler, batch_workflow, read, own_batches, allow
+p, haendler, batch_workflow, write, create_batch, allow
+p, haendler, batch_workflow, write, offer_batch, allow
+p, haendler, batch_workflow, write, confirm_delivery, allow
+p, stahlwerk, batch_workflow, read, incoming_offers, allow
+p, stahlwerk, batch_workflow, read, assigned_batches, allow
+p, stahlwerk, batch_workflow, write, accept_offer, allow
+p, stahlwerk, batch_workflow, write, reject_offer, allow
+p, stahlwerk, batch_workflow, write, confirm_delivery, allow
