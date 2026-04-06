@@ -28,26 +28,27 @@ Danach erreichbar unter:
 
 ## Nutzung durch Dritte
 
-Wenn du das Projekt jemand anderem zur Verfügung stellen willst, ist der einfachste Ablauf:
+Einfachster Ablauf:
 
 1. Repository klonen
 
 ```bash
-git clone <REPO-URL>
-cd <REPO-ORDNER>
+git clone https://github.com/Buck-Data/DataPlatform_Masterarbeit.git
+cd <Ein Ordner den man dafür erstellt hat>
 ```
 
 2. Docker installieren
 
 Benötigt wird eine lokale Docker-Installation, z. B. Docker Desktop.
+Link zur Offiziellen Webseite: https://www.docker.com/products/docker-desktop/
 
-3. Projekt starten
+3. Projekt starten in einem Editor z.B VSCode
 
 ```bash
 docker-compose up --build
 ```
 
-Danach ist die Anwendung erreichbar unter:
+Danach ist die Anwendung Lokal erreichbar unter:
 
 - Streamlit: `http://localhost:8501`
 - FastAPI Docs: `http://localhost:8000/docs`
