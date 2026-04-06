@@ -26,6 +26,51 @@ Danach erreichbar unter:
 - Streamlit: `http://localhost:8501`
 - FastAPI Docs: `http://localhost:8000/docs`
 
+## Nutzung durch Dritte
+
+Wenn du das Projekt jemand anderem zur Verfügung stellen willst, ist der einfachste Ablauf:
+
+1. Repository klonen
+
+```bash
+git clone <REPO-URL>
+cd <REPO-ORDNER>
+```
+
+2. Docker installieren
+
+Benötigt wird eine lokale Docker-Installation, z. B. Docker Desktop.
+
+3. Projekt starten
+
+```bash
+docker-compose up --build
+```
+
+Danach ist die Anwendung erreichbar unter:
+
+- Streamlit: `http://localhost:8501`
+- FastAPI Docs: `http://localhost:8000/docs`
+
+Hinweise:
+
+- Python, PostgreSQL und Alembic müssen lokal nicht separat installiert werden.
+- Die Datenbank wird automatisch mit Docker gestartet.
+- Migrationen und Seed-Daten werden beim Start des API-Containers automatisch ausgeführt.
+
+Für spätere Starts reicht in der Regel:
+
+```bash
+docker-compose up
+```
+
+Wenn alles vollständig zurückgesetzt werden soll, inklusive Datenbankdaten:
+
+```bash
+docker-compose down -v
+docker-compose up --build
+```
+
 ## Lokaler Start ohne Docker
 
 Voraussetzung: laufende PostgreSQL-Datenbank.
