@@ -1,9 +1,7 @@
-"""Gemeinsame UI-Hilfsfunktionen für alle Streamlit-Seiten."""
 import streamlit as st
 
 RESTRICTED_MARKER = "__RESTRICTED__"
 
-# Farben für Status-Badges
 DELIVERY_STATUS_COLORS = {
     "geplant": "#1565C0",
     "abgeholt": "#6A1B9A",
@@ -55,7 +53,6 @@ TRAMP_ELEMENTS = ["Cu", "Sn", "Ni", "Cr", "Mo"]
 
 
 def badge(label: str, color: str) -> str:
-    """Erstellt einen farbigen HTML-Badge."""
     return (
         f'<span style="background-color:{color}; color:white; padding:3px 10px; '
         f'border-radius:4px; font-size:0.82em; font-weight:600;">{label}</span>'
@@ -63,7 +60,6 @@ def badge(label: str, color: str) -> str:
 
 
 def restricted_placeholder(role: str) -> str:
-    """Graues Placeholder-Element für nicht zugängliche Felder."""
     return (
         f'<span style="color:#aaa; font-style:italic; font-size:0.9em;">'
         f'Nicht zugänglich für Rolle: {role}</span>'
@@ -71,10 +67,6 @@ def restricted_placeholder(role: str) -> str:
 
 
 def render_field(label: str, value, role: str, unit: str = ""):
-    """
-    Rendert ein Feld: sichtbar oder als grauen Platzhalter.
-    Kernfunktion für die ABAC-Demo auf Seite 2.
-    """
     col1, col2 = st.columns([1, 2])
     with col1:
         st.markdown(f"**{label}**")
@@ -89,7 +81,6 @@ def render_field(label: str, value, role: str, unit: str = ""):
 
 
 def render_badge_field(label: str, value, role: str, color_map: dict):
-    """Rendert ein Feld mit farbigem Badge oder Restricted-Platzhalter."""
     col1, col2 = st.columns([1, 2])
     with col1:
         st.markdown(f"**{label}**")

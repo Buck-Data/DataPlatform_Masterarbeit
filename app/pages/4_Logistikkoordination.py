@@ -1,20 +1,14 @@
-"""
-Seite 4: Logistik
-Kombinierte End-to-End-Sicht für Container, Abholanfragen und Lieferkoordination.
-"""
 import streamlit as st
 import requests
 from datetime import date, timedelta
 
 from app.auth.session import (
-    DEMO_USERS,
     get_current_actor_id,
     get_current_role,
     init_session,
     render_role_switcher,
 )
 from app.db.session import get_session
-from app.db.models import Actor
 from app.services import batch_service, logistics_service
 from app.abac.engine import get_abac_engine
 from app.ui_helpers import (
@@ -35,7 +29,6 @@ render_role_switcher()
 
 role = get_current_role()
 actor_id = get_current_actor_id()
-role_label = DEMO_USERS[role]["role_label"]
 engine = get_abac_engine()
 
 st.title("Logistik")
@@ -93,6 +86,18 @@ def fetch_history(actor_id_filter: str | None = None) -> list[dict]:
         return []
 
 
+def fetch_workflow_batches(role_name: str, actor_id_value: str) -> list[dict]:
+    try:
+        r = requests.get(
+            f"{API_BASE}/workflow/batches",
+            params={"role": role_name, "actor_id": actor_id_value},
+            timeout=5,
+        )
+        return r.json() if r.ok else []
+    except Exception:
+        return []
+
+
 def check_abac(view: str) -> bool:
     try:
         r = requests.get(f"{API_BASE}/abac/fields/{role}/container_logistics", timeout=5)
@@ -109,16 +114,20 @@ def actor_name(actors: list[dict], lookup_id: str) -> str:
     return actor["name"] if actor else lookup_id[:8] + "..."
 
 
-def is_order_for_current_steel_mill(order, actor: dict | None) -> bool:
-    if actor is None:
-        return False
-    actor_name_value = actor.get("name", "")
-    organization = actor.get("organization", "")
-    delivery_location = order.delivery_location or ""
-    return any(
-        candidate and candidate in delivery_location
-        for candidate in (actor_name_value, organization)
-    )
+def next_container_action(container: dict, reqs: list[dict]) -> str:
+    active_requests = [r for r in reqs if r["status"] in ("ausstehend", "angenommen")]
+    accepted_request = next((r for r in reqs if r["status"] == "angenommen"), None)
+    if accepted_request:
+        if accepted_request.get("confirmed_by_metal_processor"):
+            return "Warte auf Händlerbestätigung der Abholung."
+        return "Abholung mit ausgewähltem Händler bestätigen."
+    if active_requests:
+        return "Offene Abholanfragen prüfen oder auf Händlerreaktion warten."
+    if container["status"] in ("voll", "abholbereit"):
+        return "Händler anfragen oder auf Marktanträge warten."
+    if container["status"] == "verfuegbar":
+        return "Container ist frei und kann neu befüllt werden."
+    return "Container weiter befüllen und bei Bedarf zur Abholung freigeben."
 
 
 def render_delivery_orders(display_orders, batches, actors_by_id, show_full: bool):
@@ -126,7 +135,9 @@ def render_delivery_orders(display_orders, batches, actors_by_id, show_full: boo
         st.info("Keine Aufträge in dieser Ansicht.")
         return
 
-    tab_all, tab_geplant, tab_unterwegs = st.tabs(["Alle", "Geplant", "In Transit / Verzögert"])
+    tab_all, tab_erwartet, tab_unterwegs, tab_abgeschlossen = st.tabs(
+        ["Alle", "Erwartet", "Unterwegs", "Abgeschlossen"]
+    )
 
     def _render_orders(orders, scope: str):
         for order in orders:
@@ -141,7 +152,8 @@ def render_delivery_orders(display_orders, batches, actors_by_id, show_full: boo
                     col2.caption(f"Von: {order.pickup_location}")
 
                     col3.markdown(f"Ziel: {order.delivery_location}")
-                    col3.caption(f"Carrier: {order.carrier or '–'}")
+                    receiver_name = actors_by_id.get(order.receiving_actor_id, {}).get("name", "–")
+                    col3.caption(f"Empfänger: {receiver_name} | Carrier: {order.carrier or '–'}")
 
                     col4.markdown(
                         badge(order.container_status, CONTAINER_STATUS_COLORS.get(order.container_status, "#546E7A")),
@@ -181,30 +193,28 @@ def render_delivery_orders(display_orders, batches, actors_by_id, show_full: boo
 
                 st.caption(f"Stand: {format_datetime(order.updated_at)}")
 
-                if role == "stahlwerk" and order.delivery_status != "geliefert":
+                if role == "stahlwerk" and order.delivery_status in ("abgeholt", "in_transit", "verzoegert"):
                     if st.button("Als geliefert bestätigen", key=f"steel_confirm_{scope}_{order.id}", type="primary"):
-                        db = get_session()
-                        try:
-                            updated = logistics_service.update_order_status(
-                                db,
-                                order.id,
-                                delivery_status="geliefert",
-                                container_status=order.container_status,
-                            )
-                            if updated:
-                                st.success("Lieferung als geliefert bestätigt.")
-                                st.rerun()
-                            st.error("Auftrag nicht gefunden.")
-                        finally:
-                            db.close()
+                        resp = requests.patch(
+                            f"{API_BASE}/logistics/{order.id}/status",
+                            params={"actor_id": actor_id},
+                            json={"delivery_status": "geliefert"},
+                            timeout=5,
+                        )
+                        if resp.ok:
+                            st.success("Lieferung als geliefert bestätigt.")
+                            st.rerun()
+                        st.error(f"Fehler: {resp.text}")
                 st.divider()
 
     with tab_all:
         _render_orders(display_orders, "all")
-    with tab_geplant:
-        _render_orders([o for o in display_orders if o.delivery_status == "geplant"], "planned")
+    with tab_erwartet:
+        _render_orders([o for o in display_orders if o.delivery_status == "geplant"], "expected")
     with tab_unterwegs:
-        _render_orders([o for o in display_orders if o.delivery_status in ("in_transit", "verzoegert")], "transit")
+        _render_orders([o for o in display_orders if o.delivery_status in ("abgeholt", "in_transit", "verzoegert")], "transit")
+    with tab_abgeschlossen:
+        _render_orders([o for o in display_orders if o.delivery_status == "geliefert"], "done")
 
 
 actors = fetch_actors()
@@ -241,7 +251,7 @@ display_orders = [o for o in all_orders if o.requesting_actor_id == actor_id]
 
 if role == "stahlwerk":
     display_orders = sorted(
-        [o for o in all_orders if is_order_for_current_steel_mill(o, current_actor)],
+        [o for o in all_orders if o.receiving_actor_id == actor_id],
         key=lambda o: (o.delivery_date or o.pickup_date or date.max, o.created_at),
     )
     st.subheader("Transporte & Lieferungen")
@@ -250,9 +260,18 @@ if role == "stahlwerk":
 
 if role == "metallverarbeiter":
     container_context = st.container()
+    batch_context = None
 else:
-    tab_container, tab_delivery = st.tabs(["Container & Abholung", "Transporte & Lieferungen"])
-    container_context = tab_container
+    if role == "haendler":
+        tab_container, tab_batch, tab_delivery = st.tabs(
+            ["Container & Abholung", "Chargen aus Abholungen", "Stahlwerk-Lieferungen"]
+        )
+        container_context = tab_container
+        batch_context = tab_batch
+    else:
+        tab_container, tab_delivery = st.tabs(["Container & Abholung", "Transporte & Lieferungen"])
+        container_context = tab_container
+        batch_context = None
 
 with container_context:
     if role == "metallverarbeiter":
@@ -285,6 +304,7 @@ with container_context:
                     col2.markdown(f"**Füllstand:** {fill} %")
                     col2.progress(fill / 100)
                     col2.caption(f"ca. {est_vol:.1f} m³ von {c['capacity_m3']:.0f} m³")
+                    st.caption(f"Nächster Schritt: {next_container_action(c, reqs)}")
 
                     st.markdown("---")
 
@@ -310,7 +330,12 @@ with container_context:
                                     "requested_pickup_date": requested_date.isoformat(),
                                     "notes": req_notes or None,
                                 }
-                                resp = requests.post(f"{API_BASE}/containers/{c['id']}/request-trader", json=payload, timeout=5)
+                                resp = requests.post(
+                                    f"{API_BASE}/containers/{c['id']}/request-trader",
+                                    params={"actor_id": actor_id},
+                                    json=payload,
+                                    timeout=5,
+                                )
                                 if resp.ok:
                                     st.success(f"Anfrage an {selected_trader['name']} gesendet.")
                                     st.rerun()
@@ -336,13 +361,21 @@ with container_context:
 
                         if req["status"] == "ausstehend" and req["initiator"] == "haendler":
                             if rcol3.button("Annehmen", key=f"accept_{req['id']}", type="primary"):
-                                resp = requests.patch(f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/accept", timeout=5)
+                                resp = requests.patch(
+                                    f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/accept",
+                                    params={"actor_id": actor_id},
+                                    timeout=5,
+                                )
                                 if resp.ok:
                                     st.success("Antrag angenommen.")
                                     st.rerun()
                                 st.error(f"Fehler: {resp.text}")
                             if rcol3.button("Ablehnen", key=f"reject_{req['id']}"):
-                                resp = requests.patch(f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/reject", timeout=5)
+                                resp = requests.patch(
+                                    f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/reject",
+                                    params={"actor_id": actor_id},
+                                    timeout=5,
+                                )
                                 if resp.ok:
                                     st.warning("Antrag abgelehnt.")
                                     st.rerun()
@@ -351,7 +384,8 @@ with container_context:
                         if req["status"] == "angenommen" and not req.get("confirmed_by_metal_processor", False):
                             if rcol3.button("Abholung bestätigen", key=f"confirm_mv_{req['id']}", type="primary"):
                                 resp = requests.patch(
-                                    f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/confirm?confirming_role=metallverarbeiter",
+                                    f"{API_BASE}/containers/{c['id']}/pickup-requests/{req['id']}/confirm",
+                                    params={"confirming_role": "metallverarbeiter", "actor_id": actor_id},
                                     timeout=5,
                                 )
                                 if resp.ok:
@@ -383,7 +417,12 @@ with container_context:
                     "scrap_class": c_class or None,
                     "notes": c_notes or None,
                 }
-                resp = requests.post(f"{API_BASE}/containers", json=payload, timeout=5)
+                resp = requests.post(
+                    f"{API_BASE}/containers",
+                    params={"actor_id": actor_id},
+                    json=payload,
+                    timeout=5,
+                )
                 if resp.ok:
                     st.success(f"Container {c_number} angelegt.")
                     st.rerun()
@@ -455,7 +494,8 @@ with container_context:
                                 if r["status"] == "angenommen" and not r.get("confirmed_by_trader", False):
                                     if st.button("Abholung bestätigen", key=f"confirm_h_{r['id']}", type="primary"):
                                         resp = requests.patch(
-                                            f"{API_BASE}/containers/{c['id']}/pickup-requests/{r['id']}/confirm?confirming_role=haendler",
+                                            f"{API_BASE}/containers/{c['id']}/pickup-requests/{r['id']}/confirm",
+                                            params={"confirming_role": "haendler", "actor_id": actor_id},
                                             timeout=5,
                                         )
                                         if resp.ok:
@@ -477,7 +517,12 @@ with container_context:
                                     "notes": r_notes or None,
                                     "initiator": "haendler",
                                 }
-                                resp = requests.post(f"{API_BASE}/containers/{c['id']}/pickup-requests", json=payload, timeout=5)
+                                resp = requests.post(
+                                    f"{API_BASE}/containers/{c['id']}/pickup-requests",
+                                    params={"actor_id": actor_id},
+                                    json=payload,
+                                    timeout=5,
+                                )
                                 if resp.ok:
                                     st.success("Abholantrag gestellt.")
                                     st.rerun()
@@ -518,13 +563,21 @@ with container_context:
 
                 if r["status"] == "ausstehend":
                     if icol3.button("Annehmen", key=f"mv_accept_{r['id']}", type="primary"):
-                        resp = requests.patch(f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/accept", timeout=5)
+                        resp = requests.patch(
+                            f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/accept",
+                            params={"actor_id": actor_id},
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.success("Anfrage angenommen.")
                             st.rerun()
                         st.error(f"Fehler: {resp.text}")
                     if icol3.button("Ablehnen", key=f"mv_reject_{r['id']}"):
-                        resp = requests.patch(f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/reject", timeout=5)
+                        resp = requests.patch(
+                            f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/reject",
+                            params={"actor_id": actor_id},
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.warning("Anfrage abgelehnt.")
                             st.rerun()
@@ -532,7 +585,8 @@ with container_context:
                 elif r["status"] == "angenommen" and not r.get("confirmed_by_trader", False):
                     if icol3.button("Abholung bestätigen", key=f"confirm_h_mv_{r['id']}", type="primary"):
                         resp = requests.patch(
-                            f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/confirm?confirming_role=haendler",
+                            f"{API_BASE}/containers/{r['_container_id']}/pickup-requests/{r['id']}/confirm",
+                            params={"confirming_role": "haendler", "actor_id": actor_id},
                             timeout=5,
                         )
                         if resp.ok:
@@ -560,9 +614,63 @@ with container_context:
                 })
             st.dataframe(rows, use_container_width=True)
 
+if role == "haendler" and batch_context is not None:
+    with batch_context:
+        st.subheader("Chargen aus bestätigten Abholungen")
+        st.caption("Phase 2: bestätigte Abholungen zu Händlerchargen bündeln und anschließend ans Stahlwerk anbieten.")
+
+        history = fetch_history(actor_id)
+        workflow_batches = fetch_workflow_batches("haendler", actor_id)
+        linked_pickup_ids = {
+            pickup.get("pickup_history_entry_id")
+            for batch in workflow_batches
+            for pickup in (batch.get("provenance_chain") or [])
+            if pickup.get("pickup_history_entry_id")
+        }
+
+        open_history = [
+            h for h in history
+            if h["id"] not in linked_pickup_ids
+        ]
+
+        if not open_history:
+            st.info("Alle bestätigten Abholungen sind bereits in Händlerchargen überführt oder es liegen noch keine bestätigten Abholungen vor.")
+        else:
+            st.markdown("**Bereit zur Chargenbildung**")
+            for h in open_history:
+                cols = st.columns([3, 2, 2, 2])
+                cols[0].markdown(
+                    f"**{actor_name(actors, h['metal_processor_id'])}**  \n"
+                    f"Container: {h['container_id'][:8]}... | Schrottart: {h['scrap_type'] or '–'}"
+                )
+                cols[1].markdown(f"Abholung: **{(h['completed_at'] or '–')[:10]}**")
+                cols[2].markdown(f"Geschätztes Volumen: **{h['estimated_volume_m3']} m³**")
+                if cols[3].button("Zu Charge weiterführen", key=f"to_batch_{h['id']}", type="primary"):
+                    st.session_state["prefill_pickup_ids"] = [h["id"]]
+                    st.switch_page("pages/1_Chargenübersicht.py")
+                st.divider()
+
+        if workflow_batches:
+            st.markdown("**Bestehende Workflow-Chargen**")
+            rows = []
+            for batch in workflow_batches:
+                rows.append({
+                    "Charge": batch["batch_number"],
+                    "Status": batch.get("status", "–"),
+                    "Schrottklasse": batch.get("scrap_class", "–"),
+                    "Masse (kg)": f"{batch.get('mass_kg', 0):,.0f}",
+                    "Ziel-Stahlwerk": actor_name(actors, batch.get("offered_to_steel_mill_id")) if batch.get("offered_to_steel_mill_id") else "–",
+                    "Abholungen": batch.get("provenance_count", 0),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
 if role != "metallverarbeiter":
     with tab_delivery:
         st.subheader("Transporte & Lieferungen")
+        if role == "haendler":
+            st.caption("Phase 3: Händlercharge an ein konkretes Stahlwerk disponieren und den Transportfortschritt pflegen.")
+        else:
+            st.caption("Empfangene Händlertransporte überwachen und Wareneingang bestätigen.")
         render_delivery_orders(display_orders, batches, actors_by_id, show_full=show_full_logistics)
 
         if display_orders and role == "haendler":
@@ -576,62 +684,82 @@ if role != "metallverarbeiter":
             selected_label = st.selectbox("Auftrag auswählen", list(order_labels.keys()))
             selected_order_id = order_labels[selected_label]
 
-            col1, col2 = st.columns(2)
-            new_delivery = col1.selectbox("Neuer Lieferstatus", ["geplant", "abgeholt", "in_transit", "geliefert", "verzoegert"])
-            new_container = col2.selectbox("Neuer Containerstatus", ["leer", "teilbefuellt", "voll", "abholbereit"])
+            new_delivery = st.selectbox("Neuer Lieferstatus", ["geplant", "abgeholt", "in_transit", "verzoegert"])
 
             if st.button("Status aktualisieren"):
-                db = get_session()
-                try:
-                    updated = logistics_service.update_order_status(db, selected_order_id, new_delivery, new_container)
-                    if updated:
-                        st.success(f"Status aktualisiert: {new_delivery} / {new_container}")
-                        st.rerun()
-                    st.error("Auftrag nicht gefunden.")
-                finally:
-                    db.close()
+                resp = requests.patch(
+                    f"{API_BASE}/logistics/{selected_order_id}/status",
+                    params={"actor_id": actor_id},
+                    json={"delivery_status": new_delivery},
+                    timeout=5,
+                )
+                if resp.ok:
+                    st.success(f"Transportstatus aktualisiert: {new_delivery}")
+                    st.rerun()
+                st.error(f"Fehler: {resp.text}")
 
         if role == "haendler":
             st.markdown("---")
             st.subheader("Neuen Transportauftrag anlegen")
-            all_batches = list(batches.values())
-            if not all_batches:
-                st.warning("Keine Chargen vorhanden.")
+            workflow_batches = fetch_workflow_batches("haendler", actor_id)
+            eligible_batches = [
+                b for b in workflow_batches
+                if b.get("status") in ("angeboten", "zugewiesen")
+                and b.get("offered_to_steel_mill_id")
+                and not any(order.batch_id == b["id"] for order in display_orders)
+            ]
+            if not eligible_batches:
+                st.info("Keine disponierbaren Händlerchargen vorhanden. Lege zuerst eine Charge an und biete sie einem Stahlwerk an.")
             else:
                 with st.form("neuer_auftrag"):
-                    batch_opts = {b.batch_number: b.id for b in all_batches}
-                    selected_batch_nr = st.selectbox("Charge", list(batch_opts.keys()))
+                    batch_opts = {
+                        f"{b['batch_number']} | {b.get('scrap_class','–')} | {b.get('status','–')}": b
+                        for b in eligible_batches
+                    }
+                    selected_batch_label = st.selectbox("Charge", list(batch_opts.keys()))
+                    selected_batch = batch_opts[selected_batch_label]
+                    receiving_actor = actors_by_id.get(selected_batch["offered_to_steel_mill_id"], {})
 
                     col1, col2 = st.columns(2)
                     pickup_date = col1.date_input("Abholdatum", value=date.today() + timedelta(days=3))
-                    delivery_date = col2.date_input("Geplantes Lieferdatum", value=date.today() + timedelta(days=5))
+                    default_delivery = (
+                        date.fromisoformat(selected_batch["delivery_date"])
+                        if selected_batch.get("delivery_date")
+                        else date.today() + timedelta(days=5)
+                    )
+                    delivery_date = col2.date_input("Geplantes Lieferdatum", value=default_delivery)
                     pickup_location = col1.text_input("Abholort", value=current_actor["organization"])
-                    delivery_location = col2.text_input("Lieferziel", value="Südstahl AG Werk")
+                    delivery_location = col2.text_input(
+                        "Lieferziel",
+                        value=f"{receiving_actor.get('name', 'Stahlwerk')} Werk",
+                    )
                     carrier = col2.text_input("Transportunternehmen (optional)")
 
-                    container_status = st.selectbox("Containerstatus", ["leer", "teilbefuellt", "voll", "abholbereit"], index=3)
+                    container_status = st.selectbox("Beladestatus bei Versand", ["teilbefuellt", "voll", "abholbereit"], index=2)
                     notes = st.text_area("Hinweise (optional)")
                     submitted = st.form_submit_button("Transportauftrag anlegen")
 
                 if submitted:
-                    db = get_session()
-                    try:
-                        order = logistics_service.create_logistics_order(
-                            db=db,
-                            batch_id=batch_opts[selected_batch_nr],
-                            requesting_actor_id=actor_id,
-                            pickup_date=pickup_date,
-                            delivery_date=delivery_date,
-                            pickup_location=pickup_location,
-                            delivery_location=delivery_location,
-                            container_status=container_status,
-                            delivery_status="geplant",
-                            carrier=carrier or None,
-                            notes=notes or None,
-                        )
-                        st.success(f"Transportauftrag angelegt (ID: {order.id[:8]}...)")
+                    payload = {
+                        "batch_id": selected_batch["id"],
+                        "requesting_actor_id": actor_id,
+                        "receiving_actor_id": selected_batch["offered_to_steel_mill_id"],
+                        "pickup_date": pickup_date.isoformat(),
+                        "delivery_date": delivery_date.isoformat(),
+                        "pickup_location": pickup_location,
+                        "delivery_location": delivery_location,
+                        "container_status": container_status,
+                        "delivery_status": "geplant",
+                        "carrier": carrier or None,
+                        "notes": notes or None,
+                    }
+                    resp = requests.post(
+                        f"{API_BASE}/logistics",
+                        params={"actor_id": actor_id},
+                        json=payload,
+                        timeout=5,
+                    )
+                    if resp.ok:
+                        st.success("Transportauftrag angelegt.")
                         st.rerun()
-                    except Exception as exc:
-                        st.error(f"Fehler beim Anlegen: {exc}")
-                    finally:
-                        db.close()
+                    st.error(f"Fehler beim Anlegen: {resp.text}")

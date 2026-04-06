@@ -1009,7 +1009,7 @@ def seed():
         # ── Logistikaufträge ──────────────────────────────────────────────────
         logistics_data = [
             {
-                "batch": batch1, "actor": actor_schmidt,
+                "batch": batch1, "actor": actor_schmidt, "receiver": actor_suedstahl,
                 "pickup_date": date(2026, 2, 19),
                 "delivery_date": date(2026, 2, 20),
                 "pickup_location": "Lager Müller Recycling GmbH, München",
@@ -1019,7 +1019,7 @@ def seed():
                 "notes": "Sonderfreigabe erteilt. Händlerlieferung am 20.02.2026 vollständig entladen.",
             },
             {
-                "batch": batch2, "actor": actor_schmidt,
+                "batch": batch2, "actor": actor_schmidt, "receiver": actor_thyssen,
                 "pickup_date": date(2026, 2, 5),
                 "delivery_date": date(2026, 2, 7),
                 "pickup_location": "Lager Müller Recycling GmbH, München",
@@ -1029,7 +1029,7 @@ def seed():
                 "notes": "Anlieferfenster mit Oststahl AG für 07.02.2026, 08:00-10:00 Uhr abgestimmt.",
             },
             {
-                "batch": batch3, "actor": actor_schmidt,
+                "batch": batch3, "actor": actor_schmidt, "receiver": actor_suedstahl,
                 "pickup_date": date(2026, 2, 12),
                 "delivery_date": date(2026, 2, 13),
                 "pickup_location": "Lager Müller Recycling GmbH, München",
@@ -1039,7 +1039,7 @@ def seed():
                 "notes": "ETA Südstahl AG: 13.02.2026 gegen 09:30 Uhr. Sn-Überschreitung kommuniziert, Abzug vereinbart.",
             },
             {
-                "batch": batch4, "actor": actor_mueller,
+                "batch": batch4, "actor": actor_mueller, "receiver": actor_nordstahl,
                 "pickup_date": date(2026, 2, 21),
                 "delivery_date": date(2026, 2, 22),
                 "pickup_location": "Lager Hoffmann Metallhandel GmbH, Essen",
@@ -1049,7 +1049,7 @@ def seed():
                 "notes": "Saubere Neuschrottcharge, ohne Abweichungen übernommen",
             },
             {
-                "batch": batch5, "actor": actor_keller,
+                "batch": batch5, "actor": actor_keller, "receiver": actor_thyssen,
                 "pickup_date": date(2026, 2, 26),
                 "delivery_date": date(2026, 2, 26),
                 "pickup_location": "Lager Keller Schrott GmbH, Kassel",
@@ -1065,6 +1065,7 @@ def seed():
                 id=str(uuid.uuid4()),
                 batch_id=ld["batch"].id,
                 requesting_actor_id=ld["actor"].id,
+                receiving_actor_id=ld["receiver"].id,
                 pickup_date=ld["pickup_date"],
                 delivery_date=ld["delivery_date"],
                 pickup_location=ld["pickup_location"],

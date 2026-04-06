@@ -14,7 +14,6 @@ DEFAULT_THRESHOLDS = {
 
 
 def calculate_threshold_status(element_values: dict, thresholds: dict) -> tuple[bool, list]:
-    """Berechnet, ob Grenzwerte überschritten sind und welche Elemente betroffen sind."""
     exceeded = []
     for element, value in element_values.items():
         if element in thresholds and value > thresholds[element]:
@@ -23,10 +22,6 @@ def calculate_threshold_status(element_values: dict, thresholds: dict) -> tuple[
 
 
 def calculate_eaf_compatibility(element_values: dict, thresholds: dict) -> str:
-    """
-    Leitet EAF-Kompatibilitätsklasse aus chemischer Zusammensetzung ab.
-    Nicht manuell eingebbar – verhindert Widersprüche zu Analysedaten (F4).
-    """
     critical_exceeded = []
     for element, value in element_values.items():
         if element in thresholds and value > thresholds[element] * 1.5:
@@ -72,7 +67,6 @@ def create_chemical_composition(
     )
     db.add(composition)
 
-    # EAF-Kompatibilität in ScrapBatch aktualisieren
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if batch:
         batch.eaf_compatibility = calculate_eaf_compatibility(element_values, thresholds)

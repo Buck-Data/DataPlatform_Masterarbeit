@@ -1,7 +1,7 @@
 import streamlit as st
 
-from app.auth.session import init_session, render_role_switcher, get_current_role, DEMO_USERS
-from app.ui_helpers import badge, VALIDATION_STATUS_COLORS, EAF_STATUS_COLORS
+from app.auth.session import init_session, render_role_switcher, get_current_role
+from app.ui_helpers import badge
 
 st.set_page_config(
     page_title="Scrap Data Platform",
@@ -14,9 +14,6 @@ init_session()
 render_role_switcher()
 
 role = get_current_role()
-role_label = DEMO_USERS[role]["role_label"]
-
-# ── Kopfbereich ───────────────────────────────────────────────────────────────
 st.title("Datenplattform Metallschrottkreislauf")
 st.markdown("**Prototyp | Masterarbeit | Marcel Buck**")
 st.markdown(
@@ -26,7 +23,6 @@ st.markdown(
 
 st.divider()
 
-# ── Anforderungsübersicht ─────────────────────────────────────────────────────
 st.subheader("Implementierte Anforderungen")
 
 col1, col2 = st.columns(2)
@@ -66,7 +62,6 @@ with col2:
 
 st.divider()
 
-# ── Aktuelle Rolle ────────────────────────────────────────────────────────────
 st.subheader("Demo-Konfiguration")
 
 col1, col2, col3 = st.columns(3)

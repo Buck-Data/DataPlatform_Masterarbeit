@@ -355,9 +355,15 @@ if role == "haendler":
                 f"{h['id'][:8]}... | {h.get('scrap_type','?')} | {h.get('estimated_volume_m3','?')} m³ | {(h.get('completed_at') or '–')[:10]}": h["id"]
                 for h in history_entries
             }
+            preselected_pickups = st.session_state.pop("prefill_pickup_ids", [])
+            default_pickup_labels = [
+                label for label, pickup_id in pickup_options.items()
+                if pickup_id in preselected_pickups
+            ]
             selected_pickups = st.multiselect(
                 "Abholhistorie verknüpfen (optional)",
                 options=list(pickup_options.keys()),
+                default=default_pickup_labels,
                 key="create_batch_pickups",
             )
             selected_pickup_ids = [pickup_options[k] for k in selected_pickups]

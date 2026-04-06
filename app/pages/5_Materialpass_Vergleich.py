@@ -446,8 +446,8 @@ st.markdown("**Demo-Szenario Kapitel 6.2** — Vier Perspektiven auf denselben M
 
 st.info(
     "**ABAC-Mechanismus (T2/O1):** Die Feldfilterung erfolgt ausschließlich durch die "
-    "Casbin-Engine (abac_policy.csv) — nicht durch UI-Logik. Gesperrte Felder werden "
-    "als **GESPERRT**-Block dargestellt, sodass der Mechanismus sichtbar und erfahrbar ist."
+    "Casbin-Engine (abac_policy.csv), nicht durch UI-Logik. Gesperrte Felder werden "
+    "als **GESPERRT**-Block dargestellt, sodass der Mechanismus sichtbar und spürbar ist."
 )
 
 # ── Charge auswählen ──────────────────────────────────────────────────────────

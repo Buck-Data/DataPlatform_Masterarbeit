@@ -69,7 +69,16 @@ class Actor(Base):
     created_batches = relationship("ScrapBatch", back_populates="created_by_trader", foreign_keys="ScrapBatch.created_by_trader_id")
     # Chargenangebote die an dieses Stahlwerk gerichtet sind
     offered_batches = relationship("ScrapBatch", back_populates="offered_to_steel_mill", foreign_keys="ScrapBatch.offered_to_steel_mill_id")
-    logistics_orders = relationship("LogisticsOrder", back_populates="requesting_actor")
+    logistics_orders = relationship(
+        "LogisticsOrder",
+        back_populates="requesting_actor",
+        foreign_keys="LogisticsOrder.requesting_actor_id",
+    )
+    incoming_logistics_orders = relationship(
+        "LogisticsOrder",
+        back_populates="receiving_actor",
+        foreign_keys="LogisticsOrder.receiving_actor_id",
+    )
     traceability_events = relationship("TraceabilityEvent", back_populates="actor")
     quality_analyses = relationship("QualityAnalysis", back_populates="inspector")
     passports_issued = relationship("MaterialPassport", back_populates="issuer")
@@ -221,6 +230,7 @@ class LogisticsOrder(Base):
     id = Column(String(36), primary_key=True, default=gen_uuid)
     batch_id = Column(String(36), ForeignKey("scrap_batches.id"), nullable=False)
     requesting_actor_id = Column(String(36), ForeignKey("actors.id"), nullable=False)
+    receiving_actor_id = Column(String(36), ForeignKey("actors.id"), nullable=True)
     pickup_date = Column(Date, nullable=False)
     delivery_date = Column(Date, nullable=True)
     pickup_location = Column(String(255), nullable=False)
@@ -233,7 +243,12 @@ class LogisticsOrder(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     batch = relationship("ScrapBatch", back_populates="logistics_orders")
-    requesting_actor = relationship("Actor", back_populates="logistics_orders")
+    requesting_actor = relationship(
+        "Actor",
+        back_populates="logistics_orders",
+        foreign_keys=[requesting_actor_id],
+    )
+    receiving_actor = relationship("Actor", back_populates="incoming_logistics_orders", foreign_keys=[receiving_actor_id])
 
 
 class CBAMRecord(Base):

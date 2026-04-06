@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.db.models import ScrapBatch, Actor
@@ -86,29 +86,20 @@ def create_batch(
 
 
 def batch_to_dict(batch: ScrapBatch) -> dict:
-    """
-    Konvertiert eine ScrapBatch-Instanz in ein Dict mit ALLEN ABAC-relevanten Feldern.
-    Dieses Dict ist die Grundlage für die Casbin-Filterung in der ABAC-Engine.
-    """
     return {
-        # Basisfelder
         "batch_number": batch.batch_number,
         "scrap_class": batch.scrap_class,
         "origin_type": batch.origin_type,
         "mass_kg": batch.mass_kg,
         "volume_m3": batch.volume_m3,
         "eaf_compatibility": batch.eaf_compatibility,
-        # Provenienzdaten
         "origin_region": batch.origin_region,
         "collection_period": batch.collection_period,
         "preparation_degree": batch.preparation_degree,
         "contamination_level": batch.contamination_level,
-        # Wirtschaftliche Felder (Hoheitswissen des Händlers)
         "price_basis": batch.price_basis,
         "pricing_formula_ref": batch.pricing_formula_ref,
-        # Lieferantenreferenz (niemals an Dritte)
         "supplier_id": batch.supplier_id,
-        # Legacy-Felder (abwärtskompatibel)
         "processing_degree": batch.processing_degree,
         "supplier_source": batch.supplier_source,
         "price_per_ton": batch.price_per_ton,
@@ -116,7 +107,6 @@ def batch_to_dict(batch: ScrapBatch) -> dict:
 
 
 def batch_to_workflow_dict(batch: ScrapBatch) -> dict:
-    """Erweitertes Dict inkl. Workflow-Status-Felder für den Händler→Stahlwerk-Prozess."""
     base = batch_to_dict(batch)
     base.update({
         "id": batch.id,
@@ -133,7 +123,6 @@ def batch_to_workflow_dict(batch: ScrapBatch) -> dict:
 
 
 def get_batches_for_trader(db: Session, trader_id: str) -> list:
-    """Alle Chargen die diesem Händler zugeordnet sind oder von ihm angelegt wurden."""
     return (
         db.query(ScrapBatch)
         .filter(
@@ -148,7 +137,6 @@ def get_batches_for_trader(db: Session, trader_id: str) -> list:
 
 
 def get_batches_for_steel_mill(db: Session, steel_mill_id: str) -> list:
-    """Chargen die diesem Stahlwerk angeboten wurden oder zugewiesen sind."""
     return (
         db.query(ScrapBatch)
         .filter(
@@ -171,7 +159,6 @@ def create_trader_batch(
     origin_region: str = None,
     collection_period: str = None,
 ) -> ScrapBatch:
-    """Legt eine neue Charge an, die vom Händler aus Containerabholungen zusammengestellt wurde."""
     ensure_valid_batch_owner(db, trader_id)
     year = datetime.utcnow().year
     prefix = f"CH-{year}-"

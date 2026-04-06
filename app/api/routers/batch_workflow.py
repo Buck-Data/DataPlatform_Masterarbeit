@@ -1,14 +1,3 @@
-"""
-Router: Händler→Stahlwerk-Workflow (/workflow/batches)
-======================================================
-Verwaltet den Lebenszyklus einer ScrapBatch vom Händler-Entwurf bis zur
-bestätigten Lieferung ans Stahlwerk.
-
-Alle Endpunkte sind per ABAC-Engine abgesichert:
-  - Händler: eigene Chargen anlegen, anbieten, Lieferung bestätigen
-  - Stahlwerk: eingehende Angebote prüfen, annehmen/ablehnen, bestätigen
-  - Metallverarbeiter: kein Zugriff (keine Policy-Regeln → 403)
-"""
 import uuid
 from datetime import datetime, date
 from typing import Optional
@@ -27,11 +16,7 @@ from app.abac.engine import get_abac_engine
 
 router = APIRouter(prefix="/workflow/batches", tags=["Batch-Workflow"])
 
-# Standard-Grenzwerte für Tramp-Elemente (EAF-Qualitätsanforderungen)
 DEFAULT_THRESHOLDS = {"Cu": 0.35, "Sn": 0.10, "Ni": 0.15, "Cr": 0.20, "Mo": 0.05}
-
-
-# ── Pydantic-Schemas ──────────────────────────────────────────────────────────
 
 class BatchCreate(BaseModel):
     scrap_class: str
@@ -43,7 +28,6 @@ class BatchCreate(BaseModel):
     origin_region: Optional[str] = None
     collection_period: Optional[str] = None
     source_pickup_ids: list[str] = []
-    # Optionale chemische Zusammensetzung
     chemical_values: Optional[dict] = None
 
 
@@ -54,15 +38,10 @@ class BatchOffer(BaseModel):
 
 
 class DeliveryConfirm(BaseModel):
-    # "haendler" oder "stahlwerk" — wer bestätigt
     confirming_role: str
     actor_id: str
 
-
-# ── Hilfsfunktion: ABAC-Zugriffsprüfung ──────────────────────────────────────
-
 def _check_batch_workflow_access(role: str, action: str):
-    """Wirft HTTP 403 wenn die Rolle keinen Zugriff auf die Aktion hat."""
     engine = get_abac_engine()
     if not engine.enforcer.enforce(role, "batch_workflow", "write", action) and \
        not engine.enforcer.enforce(role, "batch_workflow", "read", action):
@@ -73,7 +52,6 @@ def _check_batch_workflow_access(role: str, action: str):
 
 
 def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str | None = None) -> dict:
-    """Baut die vollständige Response-Struktur für eine Charge zusammen."""
     data = batch_service.batch_to_workflow_dict(batch)
     if role:
         engine = get_abac_engine()
@@ -84,7 +62,6 @@ def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str 
             base_fields = engine.filter_batch_fields(role, base_fields)
         data.update(base_fields)
 
-    # Chemische Analyse (neueste) anhängen
     latest_chem = chemical_service.get_latest_composition(db, batch.id)
     if latest_chem:
         chem_data = {
@@ -95,7 +72,6 @@ def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str 
             "analysis_method": latest_chem.analysis_method,
             "measured_at": latest_chem.measured_at.isoformat() if latest_chem.measured_at else None,
         }
-        # ABAC-Filterung der Chemie-Felder
         if role:
             engine = get_abac_engine()
             if role == "stahlwerk":
@@ -106,7 +82,6 @@ def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str 
     else:
         data["chemical"] = None
 
-    # Herkunfts-Provenienz: Containerabholungen verknüpft mit dieser Charge
     source_pickups = db.query(BatchSourcePickup).filter(
         BatchSourcePickup.batch_id == batch.id
     ).all()
@@ -116,16 +91,14 @@ def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str 
             PickupHistoryEntry.id == sp.pickup_history_entry_id
         ).first()
         if entry:
-            # Händler-interne Felder (container_id, trader_id) werden herausgefiltert
-            # — Stahlwerk sieht nur was die ABAC-Policy erlaubt
             p = {
                 "pickup_date": entry.completed_at.isoformat() if entry.completed_at else None,
                 "scrap_type": entry.scrap_type,
                 "estimated_volume_m3": entry.estimated_volume_m3,
                 "fill_level_at_pickup": entry.fill_level_at_pickup,
             }
-            # Trader/Container-IDs nur für den Händler selbst sichtbar
             if role in ("haendler", None):
+                p["pickup_history_entry_id"] = entry.id
                 p["trader_id"] = entry.trader_id
                 p["container_id"] = entry.container_id
             provenance.append(p)
@@ -134,21 +107,13 @@ def _batch_response(batch: ScrapBatch, db: Session, role: str = None, tier: str 
 
     return data
 
-
-# ── Endpunkte ─────────────────────────────────────────────────────────────────
-
 @router.post("")
 def create_batch(data: BatchCreate, db: Session = Depends(get_db)):
-    """Händler legt eine neue Charge aus Containerabholungen an.
-    ABAC: nur haendler darf create_batch.
-    """
-    # Akteur laden und Rolle prüfen
     trader = db.query(Actor).filter(Actor.id == data.trader_id).first()
     if not trader:
         raise HTTPException(status_code=404, detail="Akteur nicht gefunden.")
     _check_batch_workflow_access(trader.role, "create_batch")
 
-    # Charge anlegen
     batch = batch_service.create_trader_batch(
         db=db,
         scrap_class=data.scrap_class,
@@ -161,7 +126,6 @@ def create_batch(data: BatchCreate, db: Session = Depends(get_db)):
         collection_period=data.collection_period,
     )
 
-    # Quellenverknüpfungen anlegen (Abholungen → Charge)
     for pickup_id in data.source_pickup_ids:
         entry = db.query(PickupHistoryEntry).filter(
             PickupHistoryEntry.id == pickup_id
@@ -174,7 +138,6 @@ def create_batch(data: BatchCreate, db: Session = Depends(get_db)):
             )
             db.add(link)
 
-    # Optionale chemische Analyse direkt mit anlegen
     if data.chemical_values:
         chemical_service.create_chemical_composition(
             db=db,
@@ -196,12 +159,6 @@ def list_batches(
     actor_id: str = Query(..., description="ID des anfragenden Akteurs"),
     db: Session = Depends(get_db),
 ):
-    """Chargen rollenbezogen abrufen.
-    Händler: eigene Chargen (created_by_trader_id).
-    Stahlwerk: angebotene und zugewiesene Chargen (offered_to_steel_mill_id).
-    Metallverarbeiter: 403.
-    """
-    engine = get_abac_engine()
     actor = db.query(Actor).filter(Actor.id == actor_id).first()
     tier = actor.relationship_tier if actor and role == "stahlwerk" else None
     if role == "haendler":
@@ -226,12 +183,10 @@ def get_batch(
     actor_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    """Einzelne Charge mit vollständiger Herkunftskette und ABAC-gefilterter Chemie."""
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Charge nicht gefunden.")
 
-    # Zugriffsprüfung: Händler darf nur eigene, Stahlwerk nur zugewiesene
     if role == "haendler" and batch.created_by_trader_id != actor_id:
         raise HTTPException(status_code=403, detail="Keine Berechtigung für diese Charge.")
     if role == "stahlwerk" and batch.offered_to_steel_mill_id != actor_id:
@@ -251,9 +206,6 @@ def offer_batch(
     actor_id: str = Query(..., description="ID des anbietenden Händlers"),
     db: Session = Depends(get_db),
 ):
-    """Händler bietet Charge einem Stahlwerk an.
-    Status: entwurf → angeboten.
-    """
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Charge nicht gefunden.")
@@ -286,9 +238,6 @@ def accept_offer(
     actor_id: str = Query(..., description="ID des akzeptierenden Stahlwerks"),
     db: Session = Depends(get_db),
 ):
-    """Stahlwerk akzeptiert Chargenangebot.
-    Status: angeboten → zugewiesen.
-    """
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Charge nicht gefunden.")
@@ -314,9 +263,6 @@ def reject_offer(
     actor_id: str = Query(..., description="ID des ablehnenden Stahlwerks"),
     db: Session = Depends(get_db),
 ):
-    """Stahlwerk lehnt Chargenangebot ab.
-    Status: angeboten → entwurf (Händler kann erneut anbieten).
-    """
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Charge nicht gefunden.")
@@ -328,7 +274,6 @@ def reject_offer(
             detail=f"Charge hat Status '{batch.workflow_status}'."
         )
 
-    # Zurück auf Entwurf setzen, damit der Händler ein neues Angebot machen kann
     batch.workflow_status = "entwurf"
     batch.owner_id = batch.created_by_trader_id
     batch.offered_to_steel_mill_id = None
@@ -345,11 +290,6 @@ def confirm_delivery(
     data: DeliveryConfirm,
     db: Session = Depends(get_db),
 ):
-    """Lieferung bestätigen — Händler und Stahlwerk bestätigen jeweils separat.
-    Wenn beide confirmed: atomare Transaktion →
-      - workflow_status = 'geliefert'
-      - TraceabilityEvent (anlieferung) anlegen
-    """
     batch = db.query(ScrapBatch).filter(ScrapBatch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Charge nicht gefunden.")
@@ -372,11 +312,8 @@ def confirm_delivery(
 
     batch.updated_at = datetime.utcnow()
 
-    # Atomare Transaktion: wenn beide bestätigt haben → geliefert
     if batch.confirmed_by_trader and batch.confirmed_by_steel_mill:
         batch.workflow_status = "geliefert"
-
-        # TraceabilityEvent für die Lieferungsbestätigung anlegen
         event = TraceabilityEvent(
             id=str(uuid.uuid4()),
             batch_id=batch.id,

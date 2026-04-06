@@ -20,9 +20,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-
-# ── Pydantic-Schemas ──────────────────────────────────────────────────────────
-
 class ChemicalCompositionCreate(BaseModel):
     batch_id: str
     element_values: dict
@@ -35,6 +32,7 @@ class ChemicalCompositionCreate(BaseModel):
 class LogisticsOrderCreate(BaseModel):
     batch_id: str
     requesting_actor_id: str
+    receiving_actor_id: str
     pickup_date: date
     delivery_date: Optional[date] = None
     pickup_location: str
@@ -47,7 +45,6 @@ class LogisticsOrderCreate(BaseModel):
 
 class LogisticsStatusUpdate(BaseModel):
     delivery_status: Optional[str] = None
-    container_status: Optional[str] = None
 
 
 class ContainerCreate(BaseModel):
@@ -55,7 +52,7 @@ class ContainerCreate(BaseModel):
     owner_id: str
     location: str
     capacity_m3: float
-    fill_level: int = 0        # Füllstand 0–100 %
+    fill_level: int = 0
     status: str = "leer"
     scrap_class: Optional[str] = None
     notes: Optional[str] = None
@@ -66,17 +63,13 @@ class PickupRequestCreate(BaseModel):
     requested_pickup_date: date
     offered_price_per_ton: Optional[float] = None
     notes: Optional[str] = None
-    initiator: str = "haendler"  # "haendler" oder "metallverarbeiter"
+    initiator: str = "haendler"
 
 
 class TraderRequestCreate(BaseModel):
-    """Wird vom Metallverarbeiter gesendet: er fragt einen spezifischen Händler an."""
     haendler_id: str
     requested_pickup_date: date
     notes: Optional[str] = None
-
-
-# ── Health ────────────────────────────────────────────────────────────────────
 
 app.include_router(batch_workflow.router)
 
@@ -84,9 +77,6 @@ app.include_router(batch_workflow.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-# ── Actors ────────────────────────────────────────────────────────────────────
 
 @app.get("/actors")
 def list_actors(db: Session = Depends(get_db)):
@@ -102,9 +92,6 @@ def list_actors(db: Session = Depends(get_db)):
         }
         for a in actors
     ]
-
-
-# ── ScrapBatches ──────────────────────────────────────────────────────────────
 
 @app.get("/batches")
 def list_batches(
@@ -139,9 +126,6 @@ def get_batch(
         batch_dict = engine.filter_batch_fields(role, batch_dict)
     batch_dict["id"] = batch.id
     return batch_dict
-
-
-# ── Chemical Compositions ─────────────────────────────────────────────────────
 
 @app.get("/batches/{batch_id}/chemical")
 def get_chemical(
@@ -194,9 +178,6 @@ def create_chemical(
         "message": "Analyse gespeichert",
     }
 
-
-# ── Material Passports ────────────────────────────────────────────────────────
-
 @app.get("/batches/{batch_id}/passport")
 def get_passport(batch_id: str, db: Session = Depends(get_db)):
     passport = passport_service.get_passport_for_batch(db, batch_id)
@@ -212,9 +193,6 @@ def get_passport(batch_id: str, db: Session = Depends(get_db)):
         "created_at": passport.created_at.isoformat() if passport.created_at else None,
         "updated_at": passport.updated_at.isoformat() if passport.updated_at else None,
     }
-
-
-# ── Traceability Events ───────────────────────────────────────────────────────
 
 @app.get("/batches/{batch_id}/events")
 def get_events(batch_id: str, db: Session = Depends(get_db)):
@@ -232,16 +210,15 @@ def get_events(batch_id: str, db: Session = Depends(get_db)):
         for e in events
     ]
 
-
-# ── Logistics Orders ──────────────────────────────────────────────────────────
-
 @app.get("/logistics")
 def list_logistics(
     role: Optional[str] = Query(None),
     actor_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    if actor_id:
+    if actor_id and role == "stahlwerk":
+        orders = logistics_service.get_orders_for_receiving_actor(db, actor_id)
+    elif actor_id:
         orders = logistics_service.get_orders_by_actor(db, actor_id)
     else:
         orders = logistics_service.get_all_logistics_orders(db)
@@ -260,11 +237,32 @@ def list_logistics(
 
 
 @app.post("/logistics")
-def create_logistics(data: LogisticsOrderCreate, db: Session = Depends(get_db)):
+def create_logistics(
+    data: LogisticsOrderCreate,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    if actor_id != data.requesting_actor_id:
+        raise HTTPException(status_code=403, detail="Akteur stimmt nicht mit dem anlegenden Händler überein.")
+    trader = db.query(Actor).filter(Actor.id == data.requesting_actor_id).first()
+    if not trader or trader.role != "haendler":
+        raise HTTPException(status_code=403, detail="Nur Händler dürfen Logistikaufträge anlegen.")
+    receiver = db.query(Actor).filter(Actor.id == data.receiving_actor_id).first()
+    if not receiver or receiver.role != "stahlwerk":
+        raise HTTPException(status_code=400, detail="Empfänger muss ein Stahlwerk sein.")
+    batch = db.query(ScrapBatch).filter(ScrapBatch.id == data.batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Charge nicht gefunden")
+    if batch.created_by_trader_id != data.requesting_actor_id:
+        raise HTTPException(status_code=403, detail="Transportauftrag nur für eigene Händlercharge erlaubt.")
+    if batch.offered_to_steel_mill_id and batch.offered_to_steel_mill_id != data.receiving_actor_id:
+        raise HTTPException(status_code=400, detail="Charge ist bereits einem anderen Stahlwerk zugeordnet.")
+
     order = logistics_service.create_logistics_order(
         db=db,
         batch_id=data.batch_id,
         requesting_actor_id=data.requesting_actor_id,
+        receiving_actor_id=data.receiving_actor_id,
         pickup_date=data.pickup_date,
         delivery_date=data.delivery_date,
         pickup_location=data.pickup_location,
@@ -281,20 +279,33 @@ def create_logistics(data: LogisticsOrderCreate, db: Session = Depends(get_db)):
 def update_logistics_status(
     order_id: str,
     data: LogisticsStatusUpdate,
+    actor_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    order = logistics_service.update_order_status(
-        db, order_id, data.delivery_status, data.container_status
-    )
+    order = logistics_service.get_order_by_id(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Logistikauftrag nicht gefunden")
-    return {"id": order.id, "delivery_status": order.delivery_status, "container_status": order.container_status}
 
+    actor = db.query(Actor).filter(Actor.id == actor_id).first()
+    if not actor:
+        raise HTTPException(status_code=404, detail="Akteur nicht gefunden")
+    if actor.role == "haendler" and order.requesting_actor_id != actor_id:
+        raise HTTPException(status_code=403, detail="Nur der anlegende Händler darf den Transportstatus ändern.")
+    if actor.role == "stahlwerk" and order.receiving_actor_id != actor_id:
+        raise HTTPException(status_code=403, detail="Nur das empfangende Stahlwerk darf diesen Transport aktualisieren.")
+    if actor.role not in {"haendler", "stahlwerk"}:
+        raise HTTPException(status_code=403, detail="Keine Berechtigung für Transportstatus.")
+    if actor.role == "haendler" and data.delivery_status == "geliefert":
+        raise HTTPException(status_code=400, detail="Der Status 'geliefert' wird durch das empfangende Stahlwerk bestätigt.")
+    if actor.role == "stahlwerk" and data.delivery_status not in {None, "geliefert"}:
+        raise HTTPException(status_code=400, detail="Stahlwerke dürfen nur den Wareneingang als 'geliefert' bestätigen.")
 
-# ── Containers ────────────────────────────────────────────────────────────────
+    updated = logistics_service.update_order_status(
+        db, order_id, data.delivery_status
+    )
+    return {"id": updated.id, "delivery_status": updated.delivery_status, "container_status": updated.container_status}
 
 def _container_to_dict(c: Container) -> dict:
-    # Geschätztes Volumen: berechnetes Feld, nicht in DB gespeichert
     estimated_m3 = round(c.fill_level / 100 * c.capacity_m3, 2) if c.capacity_m3 else 0.0
     return {
         "id": c.id,
@@ -308,6 +319,7 @@ def _container_to_dict(c: Container) -> dict:
         "scrap_class": c.scrap_class,
         "notes": c.notes,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
 
 
@@ -353,7 +365,16 @@ def list_containers(
 
 
 @app.post("/containers")
-def create_container(data: ContainerCreate, db: Session = Depends(get_db)):
+def create_container(
+    data: ContainerCreate,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    if actor_id != data.owner_id:
+        raise HTTPException(status_code=403, detail="Akteur stimmt nicht mit dem Container-Eigentümer überein.")
+    owner = db.query(Actor).filter(Actor.id == data.owner_id).first()
+    if not owner or owner.role != "metallverarbeiter":
+        raise HTTPException(status_code=403, detail="Container dürfen nur für Metallverarbeiter angelegt werden.")
     c = Container(
         id=str(uuid.uuid4()),
         container_number=data.container_number,
@@ -394,12 +415,28 @@ def list_pickup_requests(container_id: str, db: Session = Depends(get_db)):
 
 @app.post("/containers/{container_id}/pickup-requests")
 def create_pickup_request(
-    container_id: str, data: PickupRequestCreate, db: Session = Depends(get_db)
+    container_id: str,
+    data: PickupRequestCreate,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db)
 ):
-    """Händler stellt Abholantrag für einen Container (haendler-initiiert)."""
     c = db.query(Container).filter(Container.id == container_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Container nicht gefunden")
+    if actor_id != data.requesting_actor_id:
+        raise HTTPException(status_code=403, detail="Akteur stimmt nicht mit dem anfragenden Händler überein.")
+    actor = db.query(Actor).filter(Actor.id == data.requesting_actor_id).first()
+    if not actor or actor.role != "haendler":
+        raise HTTPException(status_code=403, detail="Nur Händler dürfen Abholanträge stellen.")
+    if data.initiator != "haendler":
+        raise HTTPException(status_code=400, detail="Ungültiger Initiator für diesen Endpunkt.")
+    existing = db.query(PickupRequest).filter(
+        PickupRequest.container_id == container_id,
+        PickupRequest.requesting_actor_id == data.requesting_actor_id,
+        PickupRequest.status.in_(["ausstehend", "angenommen"]),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Für diesen Container existiert bereits ein aktiver Antrag dieses Händlers.")
     r = PickupRequest(
         id=str(uuid.uuid4()),
         container_id=container_id,
@@ -422,19 +459,35 @@ def create_pickup_request(
 
 @app.post("/containers/{container_id}/request-trader")
 def request_trader(
-    container_id: str, data: TraderRequestCreate, db: Session = Depends(get_db)
+    container_id: str,
+    data: TraderRequestCreate,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db)
 ):
-    """Metallverarbeiter fragt einen spezifischen Händler zur Abholung an (mv-initiiert).
-    Container-Status wechselt zu 'angefragt'.
-    """
     c = db.query(Container).filter(Container.id == container_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Container nicht gefunden")
+    actor = db.query(Actor).filter(Actor.id == c.owner_id).first()
+    trader = db.query(Actor).filter(Actor.id == data.haendler_id).first()
+    if c.owner_id != actor_id:
+        raise HTTPException(status_code=403, detail="Nur der Container-Eigentümer darf Händler anfragen.")
+    if not actor or actor.role != "metallverarbeiter":
+        raise HTTPException(status_code=403, detail="Container-Eigentümer muss Metallverarbeiter sein.")
+    if not trader or trader.role != "haendler":
+        raise HTTPException(status_code=404, detail="Angefragter Händler nicht gefunden.")
     if c.status not in ("abholbereit", "leer", "teilbefuellt", "voll", "verfuegbar"):
         raise HTTPException(
             status_code=400,
             detail=f"Container hat Status '{c.status}' – keine neue Anfrage möglich."
         )
+    existing = db.query(PickupRequest).filter(
+        PickupRequest.container_id == container_id,
+        PickupRequest.requesting_actor_id == data.haendler_id,
+        PickupRequest.initiator == "metallverarbeiter",
+        PickupRequest.status.in_(["ausstehend", "angenommen"]),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Für diesen Händler existiert bereits eine aktive Anfrage.")
     r = PickupRequest(
         id=str(uuid.uuid4()),
         container_id=container_id,
@@ -459,16 +512,32 @@ def request_trader(
 
 
 @app.patch("/containers/{container_id}/pickup-requests/{request_id}/accept")
-def accept_pickup_request(container_id: str, request_id: str, db: Session = Depends(get_db)):
-    """Nimmt einen Abholantrag an. Alle anderen ausstehenden Anträge werden abgelehnt."""
+def accept_pickup_request(
+    container_id: str,
+    request_id: str,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db),
+):
     r = db.query(PickupRequest).filter(
         PickupRequest.id == request_id, PickupRequest.container_id == container_id
     ).first()
     if not r:
         raise HTTPException(status_code=404, detail="Abholantrag nicht gefunden")
+    c = db.query(Container).filter(Container.id == container_id).first()
+    actor = db.query(Actor).filter(Actor.id == actor_id).first()
+    if not actor:
+        raise HTTPException(status_code=404, detail="Akteur nicht gefunden")
+    if r.initiator == "haendler":
+        if actor.role != "metallverarbeiter" or not c or c.owner_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der Container-Eigentümer darf Händleranträge annehmen.")
+    else:
+        if actor.role != "haendler" or r.requesting_actor_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der angefragte Händler darf diese Anfrage annehmen.")
     r.status = "angenommen"
     r.updated_at = datetime.utcnow()
-    # Alle anderen ausstehenden Anträge für diesen Container ablehnen
+    if c and c.status != "angefragt":
+        c.status = "angefragt"
+        c.updated_at = datetime.utcnow()
     db.query(PickupRequest).filter(
         PickupRequest.container_id == container_id,
         PickupRequest.id != request_id,
@@ -479,18 +548,30 @@ def accept_pickup_request(container_id: str, request_id: str, db: Session = Depe
 
 
 @app.patch("/containers/{container_id}/pickup-requests/{request_id}/reject")
-def reject_pickup_request(container_id: str, request_id: str, db: Session = Depends(get_db)):
-    """Lehnt einen Abholantrag ab. Bei mv-initiierten Anfragen: Container zurück auf 'abholbereit'."""
+def reject_pickup_request(
+    container_id: str,
+    request_id: str,
+    actor_id: str = Query(...),
+    db: Session = Depends(get_db),
+):
     r = db.query(PickupRequest).filter(
         PickupRequest.id == request_id, PickupRequest.container_id == container_id
     ).first()
     if not r:
         raise HTTPException(status_code=404, detail="Abholantrag nicht gefunden")
+    c = db.query(Container).filter(Container.id == container_id).first()
+    actor = db.query(Actor).filter(Actor.id == actor_id).first()
+    if not actor:
+        raise HTTPException(status_code=404, detail="Akteur nicht gefunden")
+    if r.initiator == "haendler":
+        if actor.role != "metallverarbeiter" or not c or c.owner_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der Container-Eigentümer darf Händleranträge ablehnen.")
+    else:
+        if actor.role != "haendler" or r.requesting_actor_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der angefragte Händler darf diese Anfrage ablehnen.")
     r.status = "abgelehnt"
     r.updated_at = datetime.utcnow()
-    # Bei mv-initiierten Anfragen: Container-Status zurücksetzen
     if r.initiator == "metallverarbeiter":
-        c = db.query(Container).filter(Container.id == container_id).first()
         if c and c.status == "angefragt":
             c.status = "abholbereit"
             c.updated_at = datetime.utcnow()
@@ -502,15 +583,10 @@ def reject_pickup_request(container_id: str, request_id: str, db: Session = Depe
 def confirm_pickup(
     container_id: str,
     request_id: str,
+    actor_id: str = Query(...),
     confirming_role: str = Query(..., description="'metallverarbeiter' oder 'haendler'"),
     db: Session = Depends(get_db),
 ):
-    """Bestätigt die Abholung durch eine der beiden Parteien.
-    Wenn beide bestätigt haben: atomare Transaktion →
-      - PickupRequest.status = 'abgeholt'
-      - Container.fill_level = 0, Container.status = 'verfuegbar'
-      - PickupHistoryEntry erstellen
-    """
     r = db.query(PickupRequest).filter(
         PickupRequest.id == request_id, PickupRequest.container_id == container_id
     ).first()
@@ -522,19 +598,25 @@ def confirm_pickup(
             detail=f"Nur angenommene Anfragen können bestätigt werden (aktuell: {r.status})."
         )
 
+    c = db.query(Container).filter(Container.id == container_id).first()
+    actor = db.query(Actor).filter(Actor.id == actor_id).first()
+    if not actor or not c:
+        raise HTTPException(status_code=404, detail="Akteur oder Container nicht gefunden")
+
     if confirming_role == "metallverarbeiter":
+        if actor.role != "metallverarbeiter" or c.owner_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der Container-Eigentümer darf als Metallverarbeiter bestätigen.")
         r.confirmed_by_metal_processor = True
     elif confirming_role == "haendler":
+        if actor.role != "haendler" or r.requesting_actor_id != actor_id:
+            raise HTTPException(status_code=403, detail="Nur der zuständige Händler darf bestätigen.")
         r.confirmed_by_trader = True
     else:
         raise HTTPException(status_code=400, detail="Ungültige Rolle für Bestätigung.")
 
     r.updated_at = datetime.utcnow()
 
-    # Wenn beide bestätigt haben: Abholung abschließen (atomare Transaktion)
     if r.confirmed_by_metal_processor and r.confirmed_by_trader:
-        c = db.query(Container).filter(Container.id == container_id).first()
-        # Historien-Eintrag vor dem Reset erstellen
         history = PickupHistoryEntry(
             id=str(uuid.uuid4()),
             container_id=container_id,
@@ -547,11 +629,9 @@ def confirm_pickup(
             scrap_type=c.scrap_class,
         )
         db.add(history)
-        # Container zurücksetzen
         c.fill_level = 0
         c.status = "verfuegbar"
         c.updated_at = datetime.utcnow()
-        # Anfrage als abgeholt markieren
         r.status = "abgeholt"
         db.commit()
         return {
@@ -576,7 +656,6 @@ def get_pickup_history(
     actor_id: Optional[str] = Query(None, description="Filter: trader_id oder metal_processor_id"),
     db: Session = Depends(get_db),
 ):
-    """Gibt Abholhistorie zurück, optional gefiltert nach Akteur."""
     q = db.query(PickupHistoryEntry)
     if actor_id:
         q = q.filter(
@@ -586,17 +665,11 @@ def get_pickup_history(
     entries = q.order_by(PickupHistoryEntry.completed_at.desc()).all()
     return [_history_entry_to_dict(h) for h in entries]
 
-
-# ── ABAC Info ─────────────────────────────────────────────────────────────────
-
 @app.get("/abac/fields/{role}/{resource_type}")
 def get_accessible_fields(role: str, resource_type: str):
     engine = get_abac_engine()
     fields = engine.get_accessible_fields(role, resource_type)
     return {"role": role, "resource_type": resource_type, "accessible_fields": fields}
-
-
-# ── EU Scrap Classes ──────────────────────────────────────────────────────────
 
 @app.get("/scrap-classes")
 def get_scrap_classes():

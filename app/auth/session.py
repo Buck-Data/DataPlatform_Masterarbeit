@@ -1,8 +1,3 @@
-"""
-Rollensimulation für den Prototyp-Demo.
-Simuliert drei Nutzer mit unterschiedlichen Rollen via st.session_state.
-Grundlage für T2/O1: derselbe Materialpass, aber rollenabhängige Feldsichtbarkeit.
-"""
 import streamlit as st
 from app.db.session import get_session
 from app.db.models import Actor
@@ -30,7 +25,6 @@ DEMO_USERS = {
 
 
 def init_session():
-    """Initialisiert Session-State mit Standardrolle."""
     if "role" not in st.session_state:
         st.session_state.role = "haendler"
     if "actor_id" not in st.session_state:
@@ -38,7 +32,6 @@ def init_session():
 
 
 def _load_actor_id():
-    """Lädt die Actor-ID aus der Datenbank anhand der aktuellen Rolle."""
     role = st.session_state.get("role", "haendler")
     try:
         db = get_session()
@@ -66,10 +59,6 @@ def get_current_user() -> dict:
 
 
 def render_role_switcher():
-    """
-    Rendert den Rollenumschalter in der Sidebar.
-    Kernstück der T2/O1-Demo: Rollenwechsel ändert die Feldsichtbarkeit.
-    """
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Aktive Rolle**")
 
